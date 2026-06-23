@@ -1,47 +1,54 @@
-mod player;
-mod opponent;
-mod ball;
-mod ui;
+pub mod ball;
+pub mod opponent;
+pub mod player;
+pub mod ui;
 
-use macroquad::prelude::*;
-use crate::player::*;
-use crate::opponent::*;
 use crate::ball::*;
-use crate::ui::*;
+use crate::opponent::*;
+use crate::player::*;
 use ::rand::Rng;
+use macroquad::audio::{Sound, load_sound, play_sound_once};
+use macroquad::prelude::*;
 
 fn window_conf() -> Conf {
     Conf {
         window_title: "Rusty Pong".to_owned(),
         window_width: 640,
         window_height: 480,
-        window_resizable: false, 
+        window_resizable: false,
         ..Default::default()
     }
 }
 
+// Game states
 enum GameState {
     StartMenu,
     Playing,
-    Reset,
     Paused,
     End,
 }
 
-fn draw_divider() {
-    draw_rectangle(
-        screen_width() / 2.0,
-        0.0,
-        1.0,
-        screen_height(),
-        GRAY
-    )
+// Reseting playing positions on game start
+fn start_playing(player: &mut Player, opponent: &mut Opponent, ball: &mut Ball) {
+    let mut rng = ::rand::thread_rng();
+
+    player.set_start_position();
+    opponent.set_start_position();
+
+    if rng.gen_range(0..2) == 0 {
+        ball.serve_player();
+    } else {
+        ball.serve_opponent();
+    }
 }
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut game_state = GameState::StartMenu;
 
-    let mut rng;
+    // Sounds used for various components
+    let player_paddle_hit_sound: Sound = load_sound("resources/paddle_hit_2.wav").await.unwrap();
+    let opponent_paddle_hit_sound: Sound = load_sound("resources/paddle_hit.wav").await.unwrap();
 
     let mut _player = Player::new();
     let mut _opponent = Opponent::new();
@@ -49,14 +56,19 @@ async fn main() {
 
     let mut player_score: i32 = 0;
     let mut opponent_score: i32 = 0;
-    let mut last_to_score: &str = "";
 
-    const ROUND_DELAY: f64 = 1.0;
     const WINNING_SCORE: i32 = 11;
-    let mut playing_starts_at = 0.0;
+    const POINT_FLASH_SECONDS: f64 = 1.0;
 
+    //Used for storing the current x, y velocities when the game is in pause
     let mut ball_paused_velocity_y = _ball.get_velocity_y();
     let mut ball_paused_velocity_x = _ball.get_velocity_x();
+
+    // Used to stall serves afer either side scores
+    let mut point_flash_ends_at = 0.0;
+    let mut point_scored_by = "player";
+    let mut serve_to_player = false;
+    let mut waiting_to_serve = false;
 
     loop {
         clear_background(BLACK);
@@ -65,99 +77,88 @@ async fn main() {
             GameState::StartMenu => {
                 ui::draw_start_menu();
 
-                // When Enter is pressed set positions, coin toss who the first serve goes to, and set a brief delay 
+                // When Enter is pressed set positions, coin toss who the first serve goes to, and set a brief delay
                 // for the first time that GameState::Reset is called.
                 if is_key_pressed(KeyCode::Enter) {
                     player_score = 0;
                     opponent_score = 0;
+                    waiting_to_serve = false;
+                    start_playing(&mut _player, &mut _opponent, &mut _ball);
 
-                    rng = ::rand::thread_rng();
-
-                    if rng.gen_range(0..2) == 0 {
-                        last_to_score = "player";
-                    }
-                    else {
-                        last_to_score = "opponent";
-                    }
-
-                    playing_starts_at = get_time() + ROUND_DELAY;
-                    game_state = GameState::Reset;
+                    game_state = GameState::Playing;
                 }
             }
-            // Read keyboard inputs and check for collisions on frame udpates. Call GameState::Reset if the ball 
+            // Read keyboard inputs and check for collisions on frame udpates. Call GameState::Reset if the ball
             // overcomes player or opponent paddles, add 1 to respective score, and make sure to reset the brief timer.
             GameState::Playing => {
-                draw_divider();
+                ui::draw_divider();
+                //_player.automatic_movement(&_ball);
                 _player.keyboard_movement();
                 _player.update_position();
 
                 _opponent.automatic_movement(&_ball);
                 _opponent.update_position();
 
-                _ball.check_player_collision(&_player);
-                _ball.check_opponent_collision(&_opponent);
+                // Serve timer
+                if waiting_to_serve && get_time() >= point_flash_ends_at {
+                    if serve_to_player {
+                        _ball.serve_player();
+                    } else {
+                        _ball.serve_opponent();
+                    }
+
+                    waiting_to_serve = false;
+                }
+
+                if !waiting_to_serve {
+                    _ball.check_player_collision(&_player, &player_paddle_hit_sound);
+                    _ball.check_opponent_collision(&_opponent, &opponent_paddle_hit_sound);
+                }
+
                 _ball.draw_and_update();
 
                 ui::draw_score_overlay(player_score, opponent_score);
 
+                // Flashing point if waiting for another serve
+                if waiting_to_serve {
+                    ui::flash_point_screen(point_scored_by);
+                }
+
+                // Pause the game is the player presses escape
                 if is_key_pressed(KeyCode::Escape) {
                     ball_paused_velocity_x = _ball.get_velocity_x();
                     ball_paused_velocity_y = _ball.get_velocity_y();
                     game_state = GameState::Paused;
                 }
 
-                if _ball.get_position()[0] < 0.0 {
+                // Small wait time to flash +1 over the user who scored before the ball is served again
+                if !waiting_to_serve && _ball.get_position()[0] < 0.0 {
                     opponent_score += 1;
+
                     if opponent_score >= WINNING_SCORE {
                         game_state = GameState::End;
                     } else {
-                        last_to_score = "opponent";
-                        playing_starts_at = get_time() + ROUND_DELAY;
-                        game_state = GameState::Reset;
+                        point_scored_by = "opponent";
+                        serve_to_player = true;
+                        point_flash_ends_at = get_time() + POINT_FLASH_SECONDS;
+                        waiting_to_serve = true;
                     }
-                }
-                else if _ball.get_position()[0] > screen_width() {
+                } else if !waiting_to_serve && _ball.get_position()[0] > screen_width() {
                     player_score += 1;
+
                     if player_score >= WINNING_SCORE {
                         game_state = GameState::End;
                     } else {
-                        last_to_score = "player";
-                        playing_starts_at = get_time() + ROUND_DELAY;
-                        game_state = GameState::Reset;
+                        point_scored_by = "player";
+                        serve_to_player = false;
+                        point_flash_ends_at = get_time() + POINT_FLASH_SECONDS;
+                        waiting_to_serve = true;
                     }
-                }
-            }
-            // Maintain positions during 1 - 2 second delay. Serve to the player who did NOT score in the last round.
-            GameState::Reset => {
-                draw_divider();
-                _player.set_start_position();
-                _player.create_gradient();
-                _player.update_position();
-
-                _opponent.set_start_position();
-                _opponent.create_gradient();
-                _opponent.update_position();
-
-                _ball.set_start_position();
-                _ball.draw_and_update();
-
-                ui::draw_reset_menu(last_to_score);
-                ui::draw_score_overlay(player_score, opponent_score);
-
-                if get_time() >= playing_starts_at {
-                    if last_to_score == "player" {
-                        _ball.serve_opponent();
-                    }
-                    else if last_to_score == "opponent" {
-                        _ball.serve_player();
-                    }
-
-                    game_state = GameState::Playing;
                 }
             }
             // Set player and opponent directions to none and continually update to simulate pausing.
             GameState::Paused => {
-                draw_divider();
+                ui::draw_divider();
                 _player.set_direction("None");
                 _player.update_position();
                 _opponent.set_direction("None");
@@ -171,39 +172,32 @@ async fn main() {
                 ui::draw_score_overlay(player_score, opponent_score);
                 ui::draw_pause_menu();
 
+                // Resume game with frozen ball velocities
                 if is_key_pressed(KeyCode::Escape) {
                     _ball.set_velocity_y(ball_paused_velocity_y);
                     _ball.set_velocity_x(ball_paused_velocity_x);
                     game_state = GameState::Playing;
                 }
+                // End game
                 if is_key_pressed(KeyCode::Q) {
                     game_state = GameState::StartMenu;
                 }
             }
             GameState::End => {
+                // Display winner
                 if player_score >= WINNING_SCORE {
                     ui::draw_end_menu("player");
-                }
-                else {
+                } else {
                     ui::draw_end_menu("opponent");
                 }
 
-                // Restart game 
+                // Restart game
                 if is_key_pressed(KeyCode::Enter) {
                     player_score = 0;
                     opponent_score = 0;
-
-                    rng = ::rand::thread_rng();
-
-                    if rng.gen_range(0..2) == 0 {
-                        last_to_score = "player";
-                    }
-                    else {
-                        last_to_score = "opponent";
-                    }
-
-                    playing_starts_at = get_time() + ROUND_DELAY;
-                    game_state = GameState::Reset;
+                    waiting_to_serve = false;
+                    start_playing(&mut _player, &mut _opponent, &mut _ball);
+                    game_state = GameState::Playing;
                 }
 
                 // Return to main menu
@@ -214,6 +208,7 @@ async fn main() {
                     game_state = GameState::StartMenu;
                 }
             }
+            _ => {}
         }
 
         next_frame().await;

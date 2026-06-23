@@ -1,7 +1,8 @@
-use crate::player::*;
 use crate::opponent::*;
-use macroquad::prelude::*;
+use crate::player::*;
 use ::rand::Rng;
+use macroquad::audio::{Sound, load_sound, play_sound_once};
+use macroquad::prelude::*;
 
 pub struct Ball {
     radius: f32,
@@ -9,7 +10,7 @@ pub struct Ball {
     position: Vec<f32>,
 
     velocity_x: f32,
-    velocity_y: f32
+    velocity_y: f32,
 }
 
 // Circular ball
@@ -21,7 +22,7 @@ impl Ball {
             position: vec![],
 
             velocity_x: 400.0,
-            velocity_y: 300.00
+            velocity_y: 300.00,
         }
     }
 
@@ -38,32 +39,51 @@ impl Ball {
         return self.velocity_y;
     }
 
+    pub fn get_radius(&self) -> f32 {
+        return self.radius;
+    }
+
     // Mutators
     pub fn set_velocity_x(&mut self, velocity: f32) {
         self.velocity_x = velocity;
     }
 
-    pub fn set_velocity_y(&mut self, velocity:f32) {
+    pub fn set_velocity_y(&mut self, velocity: f32) {
         self.velocity_y = velocity;
     }
 
-    // Starting position in center of screen
-    pub fn set_start_position(&mut self) {
-        self.position = vec![screen_width() / 2.0, screen_height() / 2.0];
-        self.velocity_x = 0.0;
-        self.velocity_y = 0.0;
+    pub fn set_position(&mut self, position: Vec<f32>) {
+        self.position = position;
     }
 
     pub fn serve_opponent(&mut self) {
         let mut rng = ::rand::thread_rng();
-        self.velocity_y = rng.gen_range(-200.0..201.0);
-        self.velocity_x = 400.0;
+        let flip_heads: bool = rng.gen_bool(0.5.into());
+
+        if flip_heads {
+            self.position = vec![screen_width() / 2.0, self.radius];
+            self.velocity_y = -300.0;
+            self.velocity_x = 150.0;
+        } else {
+            self.position = vec![screen_width() / 2.0, self.radius];
+            self.velocity_y = -300.0;
+            self.velocity_x = 150.0;
+        }
     }
 
     pub fn serve_player(&mut self) {
         let mut rng = ::rand::thread_rng();
-        self.velocity_y = rng.gen_range(-200.0..201.0);
-        self.velocity_x = -400.0;
+        let flip_heads: bool = rng.gen_bool(0.5.into());
+
+        if flip_heads {
+            self.position = vec![screen_width() / 2.0, self.radius];
+            self.velocity_y = -300.0;
+            self.velocity_x = -150.0;
+        } else {
+            self.position = vec![screen_width() / 2.0, screen_height() - self.radius];
+            self.velocity_y = 300.0;
+            self.velocity_x = -150.0;
+        }
     }
 
     /*
@@ -90,7 +110,7 @@ impl Ball {
      * diminishing y value velocity, while the outside of the paddle
      * increases y velocity
      */
-    pub fn check_player_collision(&mut self, player: &Player) {
+    pub fn check_player_collision(&mut self, player: &Player, paddle_hit_sound: &Sound) {
         let player_x = player.get_position()[0];
         let player_y = player.get_position()[1];
         let player_width = player.get_width();
@@ -100,15 +120,15 @@ impl Ball {
         let ball_y = self.position[1];
 
         // Checking collision and returning if collision is not true
-        let is_colliding =
-            ball_x <= player_x + player_width + self.radius &&
-            ball_x >= player_x + player_width &&
-            ball_y >= player_y &&
-            ball_y <= player_y + player_height;
+        let is_colliding = ball_x <= player_x + player_width + self.radius
+            && ball_x >= player_x + player_width
+            && ball_y >= player_y
+            && ball_y <= player_y + player_height;
 
         if !is_colliding {
             return;
         }
+        play_sound_once(paddle_hit_sound);
 
         // Determining segment height when the player is split 100 times
         let segments = 100;
@@ -129,15 +149,20 @@ impl Ball {
 
         // Reversing velociies based on "value"
         self.position[0] = player_x + player_width + self.radius;
-        self.velocity_x *= -1.0;
-        self.velocity_y = -300.0 * value;
 
+        // Setting x velocity to 300 if it's less after the serve
+        if self.velocity_x < 300.0 && self.velocity_x > -300.0 {
+            self.velocity_x = 300.0;
+        }
+
+        self.velocity_x *= -1.05;
+        self.velocity_y = -300.0 * value;
     }
 
     /*
      * Handling collision with opponent on a 100 point gradient
      */
-    pub fn check_opponent_collision(&mut self, opponent: &Opponent) {
+    pub fn check_opponent_collision(&mut self, opponent: &Opponent, paddle_hit_sound: &Sound) {
         let opponent_x = opponent.get_position()[0];
         let opponent_y = opponent.get_position()[1];
         let opponent_height = opponent.get_height();
@@ -146,15 +171,16 @@ impl Ball {
         let ball_y = self.position[1];
 
         // Checking collision and returning if collision is not true
-        let is_colliding =
-            ball_x >= opponent_x - self.radius &&
-            ball_x <= opponent_x &&
-            ball_y >= opponent_y &&
-            ball_y <= opponent_y + opponent_height;
+        let is_colliding = ball_x >= opponent_x - self.radius
+            && ball_x <= opponent_x
+            && ball_y >= opponent_y
+            && ball_y <= opponent_y + opponent_height;
 
         if !is_colliding {
             return;
         }
+
+        play_sound_once(paddle_hit_sound);
 
         // Determining segment height when the player is split 100 times
         let segments = 100;
@@ -173,24 +199,24 @@ impl Ball {
         // Grabbing the multiplicative value assigned in player's gradient index
         let value = opponent.get_gradient()[index].1;
 
+        // Setting x velocity to -300 if it's less after the serve
+        if self.velocity_x > -300.0 && self.velocity_x < 300.0 {
+            self.velocity_x = -300.0;
+        }
+
         // Reversing velociies based on "value"
         self.position[0] = opponent_x - self.radius;
-        self.velocity_x *= -1.0;
+        self.velocity_x *= -1.05;
         self.velocity_y = -300.0 * value;
     }
 
-    // Draw function 
+    // Draw function
     pub fn draw_and_update(&mut self) {
         self.check_wall_collision();
 
         self.position[0] += self.velocity_x * get_frame_time();
         self.position[1] += self.velocity_y * get_frame_time();
 
-        draw_circle(
-            self.position[0],
-            self.position[1],
-            self.radius,
-            RED
-        )
+        draw_circle(self.position[0], self.position[1], self.radius, RED)
     }
 }
