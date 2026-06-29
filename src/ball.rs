@@ -1,222 +1,181 @@
 use crate::opponent::*;
 use crate::player::*;
 use ::rand::Rng;
-use macroquad::audio::{Sound, load_sound, play_sound_once};
+use macroquad::audio::{Sound, play_sound_once};
 use macroquad::prelude::*;
 
 pub struct Ball {
     radius: f32,
-
-    position: Vec<f32>,
-
-    velocity_x: f32,
-    velocity_y: f32,
+    position: Vec2,
+    previous_position: Vec2,
+    velocity: Vec2,
 }
 
-// Circular ball
 impl Ball {
     pub fn new() -> Self {
         Ball {
             radius: 10.0,
-
-            position: vec![],
-
-            velocity_x: 400.0,
-            velocity_y: 300.00,
+            position: Vec2::ZERO,
+            previous_position: Vec2::ZERO,
+            velocity: vec2(400.0, 300.0),
         }
     }
 
     // Accessors
-    pub fn get_position(&self) -> &Vec<f32> {
-        &self.position
+    pub fn get_position(&self) -> Vec2 {
+        self.position
+    }
+
+    pub fn get_velocity(&self) -> Vec2 {
+        self.velocity
     }
 
     pub fn get_velocity_x(&self) -> f32 {
-        return self.velocity_x;
+        self.velocity.x
     }
 
     pub fn get_velocity_y(&self) -> f32 {
-        return self.velocity_y;
+        self.velocity.y
     }
 
     pub fn get_radius(&self) -> f32 {
-        return self.radius;
+        self.radius
     }
 
     // Mutators
     pub fn set_velocity_x(&mut self, velocity: f32) {
-        self.velocity_x = velocity;
+        self.velocity.x = velocity;
     }
 
     pub fn set_velocity_y(&mut self, velocity: f32) {
-        self.velocity_y = velocity;
+        self.velocity.y = velocity;
     }
 
-    pub fn set_position(&mut self, position: Vec<f32>) {
+    pub fn set_position(&mut self, position: Vec2) {
         self.position = position;
+        self.previous_position = position;
     }
 
     pub fn serve_opponent(&mut self) {
         let mut rng = ::rand::thread_rng();
-        let flip_heads: bool = rng.gen_bool(0.5.into());
-
-        if flip_heads {
-            self.position = vec![screen_width() / 2.0, self.radius];
-            self.velocity_y = -300.0;
-            self.velocity_x = 150.0;
-        } else {
-            self.position = vec![screen_width() / 2.0, self.radius];
-            self.velocity_y = -300.0;
-            self.velocity_x = 150.0;
-        }
+        let x_dir = if rng.gen_bool(0.5) { 150.0 } else { -150.0 };
+        self.position = vec2(screen_width() / 2.0, self.radius);
+        self.velocity = vec2(x_dir, -300.0);
+        self.previous_position = self.position;
     }
 
     pub fn serve_player(&mut self) {
         let mut rng = ::rand::thread_rng();
-        let flip_heads: bool = rng.gen_bool(0.5.into());
-
-        if flip_heads {
-            self.position = vec![screen_width() / 2.0, self.radius];
-            self.velocity_y = -300.0;
-            self.velocity_x = -150.0;
+        if rng.gen_bool(0.5) {
+            self.position = vec2(screen_width() / 2.0, self.radius);
+            self.velocity = vec2(-150.0, -300.0);
         } else {
-            self.position = vec![screen_width() / 2.0, screen_height() - self.radius];
-            self.velocity_y = 300.0;
-            self.velocity_x = -150.0;
+            self.position = vec2(screen_width() / 2.0, screen_height() - self.radius);
+            self.velocity = vec2(-150.0, 300.0);
+        }
+        self.previous_position = self.position;
+    }
+
+    /// Bounces the ball off the top and bottom walls.
+    pub fn check_wall_collision(&mut self) {
+        if self.position.y <= self.radius {
+            self.position.y = self.radius;
+            self.velocity.y *= -1.0;
+        } else if self.position.y >= screen_height() - self.radius {
+            self.position.y = screen_height() - self.radius;
+            self.velocity.y *= -1.0;
         }
     }
 
-    /*
-     * Bounces the ball off the top and bottom walls of the window
-     * Multiplies Y velocity by -1 when met with either wall coordinate
-     */
-    fn check_wall_collision(&mut self) {
-        // Top wall
-        if self.position[1] <= self.radius {
-            self.position[1] = self.radius;
-            self.velocity_y *= -1.0;
-        }
-
-        // Bottom wall
-        if self.position[1] >= screen_height() - self.radius {
-            self.position[1] = screen_height() - self.radius;
-            self.velocity_y *= -1.0;
-        }
-    }
-
-    /*
-     * Handling collision with player on a 100 point gradient.
-     * Hitting the player in the center of the paddle will result in
-     * diminishing y value velocity, while the outside of the paddle
-     * increases y velocity
-     */
+    /// Swept AABB collision with the player paddle.
+    ///
+    /// Hitting the center of the paddle diminishes Y velocity;
+    /// hitting the edges increases it, based on a 100-segment gradient.
     pub fn check_player_collision(&mut self, player: &Player, paddle_hit_sound: &Sound) {
-        let player_x = player.get_position()[0];
-        let player_y = player.get_position()[1];
-        let player_width = player.get_width();
-        let player_height = player.get_height();
+        let player_pos = player.get_position();
+        let paddle_face = player_pos.x + player.get_width();
 
-        let ball_x = self.position[0];
-        let ball_y = self.position[1];
-
-        // Checking collision and returning if collision is not true
-        let is_colliding = ball_x <= player_x + player_width + self.radius
-            && ball_x >= player_x + player_width
-            && ball_y >= player_y
-            && ball_y <= player_y + player_height;
-
-        if !is_colliding {
+        let dx = self.position.x - self.previous_position.x;
+        if dx.abs() < f32::EPSILON {
             return;
         }
+
+        let t = ((paddle_face - (self.previous_position.x - self.radius)) / dx).clamp(0.0, 1.0);
+        let impact_y = self.previous_position.y + (self.position.y - self.previous_position.y) * t;
+
+        let crossed_paddle = self.previous_position.x - self.radius > paddle_face
+            && self.position.x - self.radius <= paddle_face;
+
+        let y_overlap = impact_y + self.radius >= player_pos.y
+            && impact_y - self.radius <= player_pos.y + player.get_height();
+
+        if !(crossed_paddle && y_overlap) {
+            return;
+        }
+
         play_sound_once(paddle_hit_sound);
 
-        // Determining segment height when the player is split 100 times
-        let segments = 100;
-        let segment_height = player_height / segments as f32;
+        let value = gradient_value(player.get_gradient(), player.get_height(), impact_y - player_pos.y);
 
-        // Determining relative ball y with player y (top of player)
-        let relative_y = ball_y - player_y;
+        self.position = vec2(paddle_face + self.radius, impact_y);
 
-        // Grabbing the index of the player's gradient segment
-        let mut index = (relative_y / segment_height) as usize;
-
-        if index >= segments {
-            index = segments - 1;
+        if self.velocity.x.abs() < 300.0 {
+            self.velocity.x = -300.0;
         }
-
-        // Grabbing the multiplicative value assigned in player's gradient index
-        let value = player.get_gradient()[index].1;
-
-        // Reversing velociies based on "value"
-        self.position[0] = player_x + player_width + self.radius;
-
-        // Setting x velocity to 300 if it's less after the serve
-        if self.velocity_x < 300.0 && self.velocity_x > -300.0 {
-            self.velocity_x = 300.0;
-        }
-
-        self.velocity_x *= -1.05;
-        self.velocity_y = -300.0 * value;
+        self.velocity.x *= -1.05;
+        self.velocity.y = -300.0 * value;
     }
 
-    /*
-     * Handling collision with opponent on a 100 point gradient
-     */
+    /// Swept AABB collision with the opponent paddle.
     pub fn check_opponent_collision(&mut self, opponent: &Opponent, paddle_hit_sound: &Sound) {
-        let opponent_x = opponent.get_position()[0];
-        let opponent_y = opponent.get_position()[1];
-        let opponent_height = opponent.get_height();
+        let opponent_pos = opponent.get_position();
+        let paddle_face = opponent_pos.x;
 
-        let ball_x = self.position[0];
-        let ball_y = self.position[1];
+        let dx = self.position.x - self.previous_position.x;
+        if dx.abs() < f32::EPSILON {
+            return;
+        }
 
-        // Checking collision and returning if collision is not true
-        let is_colliding = ball_x >= opponent_x - self.radius
-            && ball_x <= opponent_x
-            && ball_y >= opponent_y
-            && ball_y <= opponent_y + opponent_height;
+        let t = ((paddle_face - (self.previous_position.x + self.radius)) / dx).clamp(0.0, 1.0);
+        let impact_y = self.previous_position.y + (self.position.y - self.previous_position.y) * t;
 
-        if !is_colliding {
+        let crossed_paddle = self.previous_position.x + self.radius < paddle_face
+            && self.position.x + self.radius >= paddle_face;
+
+        let y_overlap = impact_y + self.radius >= opponent_pos.y
+            && impact_y - self.radius <= opponent_pos.y + opponent.get_height();
+
+        if !(crossed_paddle && y_overlap) {
             return;
         }
 
         play_sound_once(paddle_hit_sound);
 
-        // Determining segment height when the player is split 100 times
-        let segments = 100;
-        let segment_height = opponent_height / segments as f32;
+        let value = gradient_value(opponent.get_gradient(), opponent.get_height(), impact_y - opponent_pos.y);
 
-        // Determining relative ball y with player y (top of player)
-        let relative_y = ball_y - opponent_y;
+        self.position = vec2(paddle_face - self.radius, impact_y);
 
-        // Grabbing the index of the player's gradient segment
-        let mut index = (relative_y / segment_height) as usize;
-
-        if index >= segments {
-            index = segments - 1;
+        if self.velocity.x.abs() < 300.0 {
+            self.velocity.x = 300.0;
         }
-
-        // Grabbing the multiplicative value assigned in player's gradient index
-        let value = opponent.get_gradient()[index].1;
-
-        // Setting x velocity to -300 if it's less after the serve
-        if self.velocity_x > -300.0 && self.velocity_x < 300.0 {
-            self.velocity_x = -300.0;
-        }
-
-        // Reversing velociies based on "value"
-        self.position[0] = opponent_x - self.radius;
-        self.velocity_x *= -1.05;
-        self.velocity_y = -300.0 * value;
+        self.velocity.x *= -1.05;
+        self.velocity.y = -300.0 * value;
     }
 
-    // Draw function
-    pub fn draw_and_update(&mut self) {
-        self.check_wall_collision();
-
-        self.position[0] += self.velocity_x * get_frame_time();
-        self.position[1] += self.velocity_y * get_frame_time();
-
-        draw_circle(self.position[0], self.position[1], self.radius, RED)
+    pub fn update(&mut self) {
+        self.previous_position = self.position;
+        self.position += self.velocity * get_frame_time();
     }
+
+    pub fn draw(&self) {
+        draw_circle(self.position.x, self.position.y, self.radius, GREEN);
+    }
+}
+
+/// Returns the gradient multiplier for a given relative hit position on a paddle.
+fn gradient_value(gradient: &Vec<(f32, f32)>, paddle_height: f32, relative_y: f32) -> f32 {
+    const SEGMENTS: usize = 100;
+    let segment_height = paddle_height / SEGMENTS as f32;
+    let index = ((relative_y / segment_height) as usize).min(SEGMENTS - 1);
+    gradient[index].1
 }
